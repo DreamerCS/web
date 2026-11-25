@@ -1,0 +1,55 @@
+name: Publish The Policy Tape
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    - cron: '7,22,37,52 * * * *'
+permissions:
+  contents: read
+  packages: read
+  pages: write
+  id-token: write
+concurrency:
+  group: pages
+  cancel-in-progress: false
+jobs:
+  publish:
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Retrieve the released website
+        id: release
+        env:
+          READER_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/policy-tape-website:latest"
+          printf '%s' "$READER_TOKEN" | docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          docker pull "$image"
+          digest="$(docker image inspect "$image" --format '{{index .RepoDigests 0}}')"
+          url="https://${GITHUB_REPOSITORY_OWNER,,}.github.io/${GITHUB_REPOSITORY#*/}/deployment-version.txt"
+          previous="$(curl --fail --silent --location --max-time 15 "$url" || true)"
+          if [[ "$digest" == "$previous" && "$GITHUB_EVENT_NAME" == schedule ]]; then
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          container="$(docker create "$image" /unused)"
+          trap 'docker rm "$container" >/dev/null' EXIT
+          mkdir publication
+          docker cp "$container:/site/." publication/
+          test -s publication/index.html
+          test -s publication/data/research-archive.json
+          printf '%s\n' "$digest" > publication/deployment-version.txt
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+      - uses: actions/configure-pages@v5
+        if: steps.release.outputs.changed == 'true'
+      - uses: actions/upload-pages-artifact@v3
+        if: steps.release.outputs.changed == 'true'
+        with:
+          path: publication
+      - id: deploy
+        if: steps.release.outputs.changed == 'true'
+        uses: actions/deploy-pages@v4
